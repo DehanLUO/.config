@@ -2,6 +2,7 @@
 #   ln -s ~/.config/zsh/zshrc ~/.zshrc
 
 source ~/.config/zsh/proxy.zsh
+source ~/.config/zsh/homebrew.zsh
 source ~/.config/zsh/env.zsh
 
 source ~/.config/zsh/zimfw.zsh
@@ -12,6 +13,8 @@ source ~/.config/zsh/fzf.zsh
 source ~/.config/zsh/fzf-tab.zsh
 source ~/.config/zsh/lazygit.zsh
 
+source ~/.config/zsh/iterm2.zsh
+
 source ~/.config/zsh/bindkey.zsh #< key bindings are reset here
 source ~/.config/zsh/alias.zsh
 
@@ -20,3 +23,4 @@ fpath+=(~/.config/zsh/function)
 # Autoload all executable files in the function/ directory as Zsh functions.
 # (.:t) means: only regular files (.), and take basename (:t) for autoload name.
 autoload -U ~/.config/zsh/function/*(.:t)
+
