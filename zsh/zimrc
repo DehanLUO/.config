@@ -1,0 +1,98 @@
+# Symlink
+#   ln -s ~/.config/zsh/zimrc ~/.zimrc
+
+#
+# This is not sourced during shell startup and is only used to configure zimfw.
+#
+
+#
+# Modules
+#
+
+# Sets sane Zsh built-in environment options.
+zmodule environment
+# Provides handy git aliases and functions.
+zmodule git
+# Applies correct bindkeys for input events.
+zmodule input
+# Sets a custom terminal title.
+zmodule termtitle
+# Utility aliases and functions. Adds colour to ls, grep and less.
+zmodule utility
+# Fast directory listing with file previews and colors, like a modern 'ls'.
+# [Repo](https://github.com/supercrabtree/k)
+# !Requirements:
+#   `brew install coreutils`
+# Usage:
+#   `k --help` Display help
+zmodule supercrabtree/k
+# Jump quickly to directories that you have visited frequently or recently
+# Usage:
+#   `z -h`    Display help
+zmodule agkozak/zsh-z
+
+# <-- Normally new modules should be added here. Check each module documentation
+# for any caveats.
+
+#
+# Prompt
+#
+
+# Exposes how long the last command took to run to prompts.
+zmodule duration-info
+# Exposes git repository status information to prompts.
+zmodule git-info
+# Formats the path to the current working directory to be used by prompts
+zmodule prompt-pwd
+
+
+# Theme: [magicmace](https://github.com/zimfw/magicmace)
+# !Requirements:
+#   1. prompt-pwd module to show the current working directory
+#   2. git-info to show git information
+zmodule magicmace
+
+#
+# Completion
+#
+
+# Additional completion definitions for Zsh.
+zmodule zsh-users/zsh-completions --fpath src
+# Enables and configures smart and extensive tab completion, must be sourced
+# after all modules that add completion definitions.
+zmodule completion
+# auto-closes, deletes and skips over matching delimiters in zsh
+# !Requirements:
+#   `autopair-init` in .zshrc after the plugin is loaded
+zmodule hlissner/zsh-autopair
+# A command line bookmark manager
+# !Requirements:
+#   `brew install fzf`
+# Usage:
+#   `zfm add <path> [<path>...]` Add bookmarks
+#   `zfm list [--files]/[--dirs]` List bookmarks
+#   `zfm select` Open bookmarks in FZF and print selection to stdout
+#   `zfm query <pattern>` Print bookmark matching <pattern> to stdcout
+#   `zfm edit` Manually edit bookmarks in editor
+#   `zfm fix` Remove bookmarked entires that no longer exist in the filesystem
+#   `zfm clear` Remove all bookmarks
+#   `f <pattern>` Jump to bookmark directory matching <pattern>
+zmodule pabloariasal/zfm
+# Replace zsh's default completion selection menu with fzf!
+# Usage: Just press `Tab` as usual
+#   `ctrl+space`: select multiple results
+#   `/`: select multiple results
+zmodule Aloxaf/fzf-tab
+
+#
+# Modules that must be initialized last
+#
+
+# Fish-like syntax highlighting for Zsh, must be sourced after completion.
+zmodule zsh-users/zsh-syntax-highlighting
+# Fish-like history search for Zsh, must be sourced after
+# zsh-users/zsh-syntax-highlighting.
+zmodule zsh-users/zsh-history-substring-search
+# Fish-like autosuggestions for Zsh. Add the following to your ~/.zshrc to boost
+# performance: ZSH_AUTOSUGGEST_MANUAL_REBIND=1
+zmodule zsh-users/zsh-autosuggestions
