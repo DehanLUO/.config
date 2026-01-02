@@ -22,7 +22,11 @@
 
 gpg-archive() {
   emulate -LR zsh
-  set -e
+
+  # Do not use 'set -e' in autoloadable Zsh functions intended for interactive
+  # use, as it can cause the entire shell to exit unexpectedly when a command
+  # fails. Instead, handle errors explicitly with conditional checks.
+  #set -e
 
   local TAR_CMD=gtar
   local GPG_RECIPIENT=dehanluo@gmail.com
@@ -91,7 +95,14 @@ gpg-archive() {
       fi
 
       print -r -- "[gpg-archive] Archiving: $dir"
-      $TAR_CMD -zcf $tar_file $dir
+
+      # Explicit error handling replaces 'set -e': if tar fails, log an error
+      # and exit the function gracefully without terminating the user's shell
+      # session.
+      $TAR_CMD -zcf $tar_file $dir || {
+        _err "Failed to archive $dir"
+        return 1
+      }
 
       print -r -- "[gpg-archive] Encrypting: $tar_file"
       gpg --batch --yes --encrypt --recipient $GPG_RECIPIENT $tar_file
@@ -126,9 +137,15 @@ gpg-archive() {
       fi
 
       print -r -- "[gpg-archive] Decrypting: $f"
-      gpg --batch --yes --decrypt \
+
+      # Pass the passphrase via stdin (file descriptor 0) rather than as a
+      # command-line argument to avoid exposing it in process listings (e.g.
+      # visible via 'ps'). This approach enhances security by keeping sensitive
+      # data out of the command line.
+      print -r -n -- "$passphrase" | \
+        gpg --batch --yes --decrypt \
           --pinentry-mode loopback \
-          --passphrase $passphrase \
+          --passphrase-fd 0 \
           --output $tar_file \
           $f
 
