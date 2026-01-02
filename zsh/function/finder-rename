@@ -1,0 +1,635 @@
+#!/usr/bin/env zsh
+# vim:ft=zsh
+# shellcheck disable=SC2034,SC2154
+
+# ==============================================================================
+# @file    finder-rename
+# @brief   Zsh autoloadable function to batch-rename files selected in macOS
+#          Finder.
+# @note    Designed for small-scale renaming (e.g., <= 100 files). Not optimized
+#          for large batches. Uses interactive preview and preserves file 
+#          extensions by default.
+#
+# Features:
+#   - Reads current Finder selection via AppleScript.
+#   - Supports plain prefixes (e.g., "vacation_") or time-formatted ones
+#     (YYYYMMDD_HHmm).
+#   - Optional time adjustments:
+#       * Subtract minutes (-r/--reduce)
+#       * Convert to target timezone (-t/--timezone: Hong_Kong/Shanghai/Toronto)
+#   - Preserves full file extensions (e.g., .tar.gz).
+#   - Shows preview before renaming.
+#   - Uses zero-padded sequential numbering (00, 01, ...).
+#
+# Requirements:
+#   - macOS (Darwin)
+#   - GNU coreutils (for gdate) — install via: brew install coreutils
+#   - Terminal must have Accessibility permissions (for Finder access).
+#
+# Usage:
+#   finder-rename [OPTIONS] PREFIX
+# ==============================================================================
+
+finder-rename() {
+  emulate -LR zsh
+  # Do not use 'set -e' in interactive functions; handle errors explicitly.
+
+  # ----------------------------------------------------------------------------
+  # Constants
+  # ----------------------------------------------------------------------------
+  local -r SCRIPT_NAME='finder-rename'
+  local -r VERSION='2.0.0'
+  local -r SOURCE_TZ='Asia/Hong_Kong'
+  local -r TIME_FORMAT_REGEX='^[0-9]{8}_[0-9]{4}$'  # YYYYMMDD_HHmm
+  local -ra VALID_TIMEZONES=('Hong_Kong' 'Shanghai' 'Toronto')
+
+  # Colour constants for terminal output.
+  local -r COLOR_RED=$'\033[0;31m'
+  local -r COLOR_GREEN=$'\033[0;32m'
+  local -r COLOR_YELLOW=$'\033[1;33m'
+  local -r COLOR_BLUE=$'\033[0;34m'
+  local -r COLOR_NC=$'\033[0m'
+
+  # Ensure consistent locale for date parsing.
+  export LANG='en_CA.UTF-8'
+
+  # ----------------------------------------------------------------------------
+  # Global state (local to function scope due to emulate -LR)
+  # ----------------------------------------------------------------------------
+  local -a selected_files=()
+  local prefix=''
+  local reduce_minutes=0
+  local timezone=''
+  local is_time_format=false
+
+  # ----------------------------------------------------------------------------
+  # Helper: print error and exit.
+  # Arguments:
+  #   Error message.
+  # Outputs:
+  #   Formatted error to stderr.
+  # ----------------------------------------------------------------------------
+  _err() {
+    print -r -- \
+      "[$(date +'%Y-%m-%dT%H:%M:%S%z')]: ${SCRIPT_NAME}: ${COLOR_RED}ERROR${COLOR_NC}: $*" >&2
+  }
+
+  # ----------------------------------------------------------------------------
+  # Helper: print warning.
+  # Arguments:
+  #   Warning message.
+  # Outputs:
+  #   Formatted warning to stderr.
+  # ----------------------------------------------------------------------------
+  _warn() {
+    print -r -- \
+      "[$(date +'%Y-%m-%dT%H:%M:%S%z')]: ${SCRIPT_NAME}: ${COLOR_YELLOW}WARNING${COLOR_NC}: $*" >&2
+  }
+
+  # ----------------------------------------------------------------------------
+  # Helper: print info.
+  # Arguments:
+  #   Info message.
+  # Outputs:
+  #   Formatted info to stdout.
+  # ----------------------------------------------------------------------------
+  _info() {
+    print -r -- \
+      "[$(date +'%Y-%m-%dT%H:%M:%S%z')]: ${SCRIPT_NAME}: ${COLOR_BLUE}INFO${COLOR_NC}: $*"
+  }
+
+  # ----------------------------------------------------------------------------
+  # Helper: print success.
+  # Arguments:
+  #   Success message.
+  # Outputs:
+  #   Formatted success to stdout.
+  # ----------------------------------------------------------------------------
+  _success() {
+    print -r -- \
+      "[$(date +'%Y-%m-%dT%H:%M:%S%z')]: ${SCRIPT_NAME}: ${COLOR_GREEN}SUCCESS${COLOR_NC}: $*"
+  }
+
+  # ----------------------------------------------------------------------------
+  # Helper: get display width (approximate; non-ASCII = 2 chars).
+  # Arguments:
+  #   String.
+  # Outputs:
+  #   Width integer.
+  # ----------------------------------------------------------------------------
+  _get_display_width() {
+    local str="$1" char_count=0 i char char_code
+
+    for (( i = 0; i < ${#str}; i++ )); do
+      char="${str:$i:1}"
+      char_code=$(printf '%d' "'$char")
+
+      if (( char_code > 127 )); then
+        (( char_count += 2 ))
+      else
+        (( char_count += 1 ))
+      fi
+    done
+
+    print -r -- "$char_count"
+  }
+
+  # ---------------------------------------------------------------------------
+  # Helper: fetch selected files from Finder.
+  # Globals:
+  #   selected_files
+  # Returns:
+  #   0 on success; 1 on failure.
+  # ----------------------------------------------------------------------------
+  _get_finder_selection() {
+    local osascript_output file_path
+
+    osascript_output=$(osascript -e '
+tell application "Finder"
+  set theSelection to selection as alias list
+  if theSelection is {} then
+    error "No files selected in Finder"
+  end if
+  set output to ""
+  set firstItem to true
+  repeat with anItem in theSelection
+    set itemPath to POSIX path of anItem
+    if not firstItem then
+      set output to output & linefeed
+    end if
+    set output to output & itemPath
+    set firstItem to false
+  end repeat
+  return output
+end tell
+      ') || { 
+        _err "Failed to get Finder selection. Check Accessibility permissions.";
+        return 1;
+      }
+
+    while IFS= read -r file_path; do
+      [[ -n "$file_path" ]] || continue
+
+      if [[ ! -e "$file_path" ]]; then
+        _warn "File does not exist: $file_path"
+        continue
+      fi
+
+      selected_files+=("$file_path")
+    done <<< "$osascript_output"
+
+    if (( ${#selected_files[@]} == 0 )); then
+      _err "No valid files selected in Finder."
+      return 1
+    fi
+
+    return 0
+  }
+
+  # ----------------------------------------------------------------------------
+  # Helper: extract full extension (e.g., "file.tar.gz" → "tar.gz").
+  # Arguments:
+  #   File path.
+  # Outputs:
+  #   Extension or empty string.
+  # ----------------------------------------------------------------------------
+  _get_file_extension() {
+    local filename
+    filename=$(basename -- "$1")
+
+    if [[ "$filename" == *.* && "$filename" != .* ]]; then
+      print -r -- "${filename#*.}"
+    else
+      print -r -- ""
+    fi
+  }
+
+  # ----------------------------------------------------------------------------
+  # Helper: get base filename.
+  # Arguments:
+  #   File path.
+  # Outputs:
+  #   Base name.
+  # ----------------------------------------------------------------------------
+  _get_base_filename() {
+    basename -- "$1"
+  }
+
+  # ----------------------------------------------------------------------------
+  # Helper: validate reduce minutes.
+  # Arguments:
+  #   Minutes string.
+  # Globals:
+  #   reduce_minutes
+  # Returns:
+  #   0 on success; 1 on error.
+  # ----------------------------------------------------------------------------
+  _validate_reduce_minutes() {
+    local mins="$1"
+
+    if ! [[ "$mins" =~ ^[0-9]+$ ]]; then
+      _err "-r/--reduce must be a positive integer."
+      return 1
+    fi
+
+    if (( mins < 1 || mins > 59 )); then
+      _err "-r/--reduce must be between 1 and 59 inclusive."
+      return 1
+    fi
+
+    reduce_minutes="$mins"
+
+    return 0
+  }
+
+  # ----------------------------------------------------------------------------
+  # Helper: validate timezone.
+  # Arguments:
+  #   Timezone name.
+  # Globals:
+  #   timezone
+  # Returns:
+  #   0 on success; 1 on error.
+  # ----------------------------------------------------------------------------
+  _validate_timezone() {
+    local tz="$1" valid_tz
+
+    for valid_tz in "${VALID_TIMEZONES[@]}"; do
+      if [[ "$valid_tz" == "$tz" ]]; then
+        timezone="$tz"
+        return 0
+      fi
+    done
+
+    _err "Unsupported timezone: $tz. Valid: ${(j:, :)VALID_TIMEZONES}."
+    return 1
+  }
+
+  # ----------------------------------------------------------------------------
+  # Helper: apply minute reduction using gdate.
+  # Arguments:
+  #   Time string (YYYYMMDD_HHmm), minutes to subtract.
+  # Outputs:
+  #   New time string.
+  # Returns:
+  #   0 on success; 1 on error.
+  # ----------------------------------------------------------------------------
+  _apply_minute_reduction() {
+    local time_str="$1" reduce_mins="$2"
+
+    command -v gdate >/dev/null || {
+      _err "gdate (GNU coreutils) required. Install: brew install coreutils."
+      return 1
+    }
+
+    local datetime_input new_time
+
+    datetime_input=$(TZ="$SOURCE_TZ" gdate -d \
+      "${time_str:0:4}-${time_str:4:2}-${time_str:6:2} ${time_str:9:2}:${time_str:11:2}:00" \
+      "+%Y-%m-%d %H:%M:%S %z" 2>/dev/null) || {
+        _err "Failed to parse time: $time_str"
+        return 1
+      }
+
+    new_time=$(TZ="$SOURCE_TZ" gdate -d "$datetime_input - $reduce_mins minutes" \
+      "+%Y%m%d_%H%M" 2>/dev/null) || {
+        _err "Failed to reduce minutes for: $time_str"
+        return 1
+      }
+
+    print -r -- "$new_time"
+
+    return 0
+  }
+
+  # ----------------------------------------------------------------------------
+  # Helper: convert time to target timezone with zone prefix.
+  # Arguments:
+  #   Time string, target timezone.
+  # Outputs:
+  #   Prefixed time (e.g., CST20250101_2259).
+  # Returns:
+  #   0 on success; 1 on error.
+  # ----------------------------------------------------------------------------
+  _convert_time_to_timezone() {
+    local time_str="$1" target_tz="$2"
+
+    command -v gdate >/dev/null || {
+      _err "gdate (GNU coreutils) required. Install: brew install coreutils."
+      return 1
+    }
+
+    local datetime_input
+    datetime_input=$(TZ="$SOURCE_TZ" gdate -d \
+      "${time_str:0:4}-${time_str:4:2}-${time_str:6:2} ${time_str:9:2}:${time_str:11:2}:00" \
+      "+%Y-%m-%d %H:%M:%S %z" 2>/dev/null) || {
+        _err "Failed to parse time: $time_str"
+        return 1
+      }
+
+    case "$target_tz" in
+      Hong_Kong)
+        local hongkong_time zone_abbr
+        hongkong_time=$(TZ=Asia/Hong_Kong gdate -d "$datetime_input" "+%Y%m%d_%H%M" 2>/dev/null) || {
+          _err "Time conversion failed for Hong Kong."
+          return 1
+        }
+        zone_abbr=$(TZ=Asia/Hong_Kong gdate -d "$datetime_input" "+%Z" 2>/dev/null)
+        [[ "$zone_abbr" != "HKT" ]] && zone_abbr="HKT"
+
+        print -r -- "${zone_abbr}${hongkong_time}"
+        ;;
+      Shanghai)
+        local shanghai_time zone_abbr
+        shanghai_time=$(TZ=Asia/Shanghai gdate -d "$datetime_input" "+%Y%m%d_%H%M" 2>/dev/null) || {
+          _err "Time conversion failed for Shanghai."
+          return 1
+        }
+        zone_abbr=$(TZ=Asia/Shanghai gdate -d "$datetime_input" "+%Z" 2>/dev/null)
+        [[ "$zone_abbr" != "CST" ]] && zone_abbr="CST"
+
+        print -r -- "${zone_abbr}${shanghai_time}"
+        ;;
+      Toronto)
+        local toronto_time zone_abbr
+        toronto_time=$(TZ=America/Toronto gdate -d "$datetime_input" "+%Y%m%d_%H%M" 2>/dev/null) || {
+          _err "Time conversion failed for Toronto."
+          return 1
+        }
+        zone_abbr=$(TZ=America/Toronto gdate -d "$datetime_input" "+%Z" 2>/dev/null)
+        #[[ "$zone_abbr" == "CDT" ]] && zone_abbr="EDT"
+        #[[ "$zone_abbr" == "CST" ]] && zone_abbr="EST"
+
+        print -r -- "${zone_abbr}${toronto_time}"
+        ;;
+      *)
+        _err "Internal error: unsupported timezone."
+        return 1
+        ;;
+    esac
+
+    return 0
+  }
+
+  # ----------------------------------------------------------------------------
+  # Helper: process time-formatted prefix with reductions/timezone.
+  # Globals:
+  #   prefix, reduce_minutes, timezone
+  # Returns:
+  #   0 on success; 1 on error.
+  # ----------------------------------------------------------------------------
+  _process_time_prefix() {
+    local temp_time="$prefix"
+
+    if (( reduce_minutes > 0 )); then
+      temp_time=$(_apply_minute_reduction "$temp_time" "$reduce_minutes") || return 1
+    fi
+
+    if [[ -n "$timezone" ]]; then
+      temp_time=$(_convert_time_to_timezone "$temp_time" "$timezone") || return 1
+    fi
+
+    prefix="$temp_time"
+
+    return 0
+  }
+
+  # ----------------------------------------------------------------------------
+  # Helper: generate new filename with sequence number.
+  # Arguments:
+  #   Original path, sequence (e.g., "00").
+  # Outputs:
+  #   New full path.
+  # ----------------------------------------------------------------------------
+  _generate_new_filename() {
+    local orig="$1" seq="$2"
+
+    local dir ext base
+    dir=$(dirname -- "$orig")
+    ext=$(_get_file_extension "$orig")
+
+    if [[ -n "$ext" ]]; then
+      base="${prefix}${seq}.${ext}"
+    else
+      base="${prefix}${seq}"
+    fi
+
+    print -r -- "${dir}/${base}"
+  }
+
+  # ----------------------------------------------------------------------------
+  # Helper: show rename preview.
+  # Globals:
+  #   selected_files, prefix
+  # ----------------------------------------------------------------------------
+  _show_rename_preview() {
+    local max_width=0 i orig base new w
+    print -r -- "${COLOR_BLUE}Rename Preview:${COLOR_NC}"
+
+    for orig in "${selected_files[@]}"; do
+      base=$(_get_base_filename "$orig")
+      w=$(_get_display_width "$base")
+      (( w > max_width )) && max_width="$w"
+    done
+    (( max_width += 4 ))
+
+    local max_index=$(( ${#selected_files[@]} - 1 ))
+    local seq_width=${#max_index}
+
+    for (( i = 1; i <= ${#selected_files[@]}; i++ )); do
+      orig="${selected_files[i]}"
+      base=$(_get_base_filename "$orig")
+      new=$(_generate_new_filename "$orig" "$(printf "%0${seq_width}d" "$(( i - 1 ))")")
+      printf "%-*s -> %s\n" "$max_width" "$base" "$(_get_base_filename "$new")"
+    done
+
+    print
+  }
+
+  # ----------------------------------------------------------------------------
+  # Helper: perform actual renaming.
+  # Globals:
+  #   selected_files, prefix
+  # Returns:
+  #   0 on full success; 1 if any failed.
+  # ----------------------------------------------------------------------------
+  _perform_renaming() {
+    local success_count=0 fail_count=0 i orig new seq
+    local max_index=$(( ${#selected_files[@]} - 1 ))
+    local seq_width=${#max_index}
+
+    for (( i = 1; i <= ${#selected_files[@]}; i++ )); do
+      orig="${selected_files[i]}"
+      seq=$(printf "%0${seq_width}d" "$(( i - 1 ))")
+      new=$(_generate_new_filename "$orig" "$seq")
+
+      if mv -n -- "$orig" "$new" 2>/dev/null; then
+        _success "Renamed: $(_get_base_filename "$orig") -> $(_get_base_filename "$new")"
+        (( success_count++ ))
+      else
+        _warn "Failed to rename: $(_get_base_filename "$orig")"
+        (( fail_count++ ))
+      fi
+    done
+
+    if (( fail_count == 0 )); then
+      _success "Rename complete: $success_count successful, $fail_count failed."
+      return 0
+    else
+      _warn "Rename complete: $success_count successful, $fail_count failed."
+      return 1
+    fi
+  }
+
+  # ----------------------------------------------------------------------------
+  # Helper: display usage.
+  # ----------------------------------------------------------------------------
+  _usage() {
+    cat <<EOF
+Usage: finder-rename [OPTIONS] PREFIX
+
+Bulk rename files selected in macOS Finder with sequential numbering.
+
+OPTIONS:
+  -r, --reduce=N       Subtract N minutes (1-59) from time-formatted prefix.
+  -t, --timezone=ZONE  Convert time prefix to timezone
+                       (Hong_Kong, Shanghai, Toronto).
+  -h, --help           Show this help.
+  -v, --version        Show version.
+
+EXAMPLES:
+  finder-rename "vacation_"
+  finder-rename "20251126_1940"
+  finder-rename -r=30 "20251126_1940"
+  finder-rename -t=Toronto "20251126_1940"
+
+NOTES:
+- Time prefix: YYYYMMDD_HHmm (interpreted as $SOURCE_TZ).
+- Non-time prefixes cannot use -r or -t.
+- Requires Accessibility permissions for Terminal.
+- GNU date (gdate) required for time operations.
+EOF
+  }
+
+  # ----------------------------------------------------------------------------
+  # Helper: parse command-line arguments.
+  # Globals:
+  #   prefix, reduce_minutes, timezone, is_time_format
+  # Returns:
+  #   0 on success; 1 on error.
+  # ----------------------------------------------------------------------------
+  _parse_arguments() {
+    local args=() opt
+    while (( $# > 0 )); do
+      opt="$1"
+      case "$opt" in
+        -r|--reduce)
+          if (( $# < 2 )) || [[ "$2" == -* ]]; then
+            _err "Option -r/--reduce requires a numeric argument."
+            return 2
+          fi
+          _validate_reduce_minutes "$2" || return 2
+          shift 2
+          ;;
+        -r=*|--reduce=*)
+          _validate_reduce_minutes "${opt#*=}" || return 2
+          shift
+          ;;
+        -t|--timezone)
+          if (( $# < 2 )) || [[ "$2" == -* ]]; then
+            _err "Option -t/--timezone requires a timezone argument."
+            return 2
+          fi
+          _validate_timezone "$2" || return 1
+          shift 2
+          ;;
+        -t=*|--timezone=*)
+          _validate_timezone "${opt#*=}" || return 2
+          shift
+          ;;
+        -h|--help)
+          _usage
+          return 1
+          ;;
+        -v|--version)
+          print -r -- "$SCRIPT_NAME version $VERSION"
+          return 1
+          ;;
+        --)
+          shift
+          args+=("$@")
+          break
+          ;;
+        -*)
+          _err "Unknown option: $opt"
+          return 2
+          ;;
+        *)
+          args+=("$1")
+          shift
+          ;;
+      esac
+    done
+
+    if (( ${#args[@]} == 0 )); then
+      _err "No prefix specified."
+      return 2
+    elif (( ${#args[@]} > 1 )); then
+      _err "Too many arguments. Use quotes for prefixes with spaces."
+      return 2
+    fi
+
+    prefix="${args[1]}"
+    if [[ "$prefix" =~ $TIME_FORMAT_REGEX ]]; then
+      is_time_format=true
+    else
+      is_time_format=false
+      if (( reduce_minutes > 0 )) || [[ -n "$timezone" ]]; then
+        _err "Options -r and -t require time-formatted prefix (YYYYMMDD_HHmm)."
+        return 2
+      fi
+    fi
+    return 0
+  }
+
+  # ----------------------------------------------------------------------------
+  # Helper: validate environment.
+  # Returns:
+  #   0 on macOS; 1 otherwise.
+  # ----------------------------------------------------------------------------
+  _validate_environment() {
+    [[ "$(uname -s)" == "Darwin" ]] || {
+      _err "This function requires macOS (Darwin)." && return 1
+    }
+    return 0
+  }
+
+  # ----------------------------------------------------------------------------
+  # Main execution flow.
+  # ----------------------------------------------------------------------------
+  _parse_arguments "$@"
+  case $? in
+      0) ;;
+      1) return 0 ;;
+      *) return 1 ;;
+  esac
+
+  _validate_environment || return 1
+  _get_finder_selection || return 1
+
+  if [[ "$is_time_format" == true ]]; then
+    _process_time_prefix || return 1
+  fi
+
+  _show_rename_preview
+
+  local response
+  print -r -- "About to rename ${COLOR_GREEN}${#selected_files[@]}${COLOR_NC} files."
+  read -r "?Proceed with rename? [y/N] " response
+  case "$response" in
+    [yY]|[yY][eE][sS]) ;;
+    *) print -r -- "Rename cancelled."; return 0 ;;
+  esac
+
+  _perform_renaming
+}
