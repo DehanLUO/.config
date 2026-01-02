@@ -434,7 +434,7 @@ end tell
     (( max_width += 4 ))
 
     local max_index=$(( ${#selected_files[@]} - 1 ))
-    local seq_width=${#max_index}
+    local seq_width=$(( ${#max_index} > 1 ? ${#max_index} : 2 ))
 
     for (( i = 1; i <= ${#selected_files[@]}; i++ )); do
       orig="${selected_files[i]}"
@@ -456,7 +456,7 @@ end tell
   _perform_renaming() {
     local success_count=0 fail_count=0 i orig new seq
     local max_index=$(( ${#selected_files[@]} - 1 ))
-    local seq_width=${#max_index}
+    local seq_width=$(( ${#max_index} > 1 ? ${#max_index} : 2 ))
 
     for (( i = 1; i <= ${#selected_files[@]}; i++ )); do
       orig="${selected_files[i]}"
