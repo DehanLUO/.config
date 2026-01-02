@@ -1,15 +1,23 @@
 #!/usr/bin/env zsh
+# vim:ft=zsh
 
-# Change directory to the root of the current Git repository.
-local git_root
+cdgit() {
+  # Change directory to the root of the current Git repository.
+  local git_root
 
-# Try to get the top-level Git directory; suppress error output.
-git_root=$(git rev-parse --show-toplevel 2>/dev/null)
+  # Try to get the top-level Git directory; suppress error output.
+  git_root=$(git rev-parse --show-toplevel 2>/dev/null)
 
-# If git succeeded and the path is a valid directory, cd into it.
-if [[ $? -eq 0 && -d $git_root ]]; then
-  cd "$git_root"
-else
-  echo "Not in a Git repository or unable to locate its root." >&2
-  return 1
+  # If git succeeded and the path is a valid directory, cd into it.
+  if [[ $? -eq 0 && -d $git_root ]]; then
+    cd "$git_root"
+  else
+    echo "Not in a Git repository or unable to locate its root." >&2
+    return 1
+  fi
+}
+
+# If executed directly (not sourced), run the function with passed args.
+if [[ $ZSH_EVAL_CONTEXT == "file" ]]; then
+  cdgit "$@"
 fi

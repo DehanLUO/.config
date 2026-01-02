@@ -1,0 +1,185 @@
+#!/usr/bin/env zsh
+# vim:ft=zsh
+
+# ==============================================================================
+# @file    gpg-archive
+# @brief   Zsh autoloadable function for GPG-encrypted archiving.
+# This script operates in two modes:
+#   - Encrypt: Compress each subdirectory with gtar, then encrypt using GPG
+#              public-key encryption (recipient: dehanluo@gmail.com).
+#   - Decrypt: Decrypt .tar.gz.gpg files using passphrase from 1Password,
+#              then extract contents.
+#
+# Dependencies:
+#   - gtar (GNU tar) — for consistent, cross-platform archiving.
+#   - gpg (GnuPG 2.2+) — for encryption/decryption.
+#   - op (1Password CLI) — to securely fetch passphrase.
+#
+# Security note:
+#   - Encryption uses public-key (no passphrase needed).
+#   - Decryption fetches passphrase from 1Password vault at runtime.
+# ==============================================================================
+
+gpg-archive() {
+  emulate -LR zsh
+  set -e
+
+  local TAR_CMD=gtar
+  local GPG_RECIPIENT=dehanluo@gmail.com
+  local OP_PASSPHRASE_REF=op://Private/GPG-macOS/passphrase
+
+  # ----------------------------------------------------------------------------
+  # Helper: print error
+  # ----------------------------------------------------------------------------
+  _err() {
+    print -r -- "[gpg-archive] Error: $*" >&2
+  }
+
+  # --------------------------------------------------------------------------- 
+  # Helper: usage
+  # --------------------------------------------------------------------------- 
+  _usage() {
+    print -r -- "Usage:"
+    print -r -- "  gpg-archive -c  Encrypt directories (public-key)."
+    print -r -- "  gpg-archive -d  Decrypt .tar.gz.gpg (passphrase from 1Password)."
+  }
+
+  # ----------------------------------------------------------------------------
+  # Check dependencies
+  # ----------------------------------------------------------------------------
+  _check_deps() {
+    local missing=()
+    for cmd in $TAR_CMD gpg op; do
+      (( ${+commands[$cmd]} )) || missing+=($cmd)
+    done
+
+    if (( $#missing )); then
+      _err "Missing tools: $missing"
+      _err "Run: brew install gnu-tar gnupg 1password-cli"
+      return 1
+    fi
+  }
+
+  # ----------------------------------------------------------------------------
+  # Get passphrase from 1Password
+  # ----------------------------------------------------------------------------
+  _get_passphrase() {
+    op read $OP_PASSPHRASE_REF 2>/dev/null
+  }
+
+  # ----------------------------------------------------------------------------
+  # Encrypt mode
+  # ----------------------------------------------------------------------------
+  _encrypt() {
+    setopt localoptions nullglob dotglob
+
+    local dir archive tar_file enc_file
+    for dir (*/); do
+      [[ -d $dir ]] || continue
+      dir=${dir%/}
+      archive=$dir.tar.gz
+      tar_file=$archive
+      enc_file=$archive.gpg
+
+      if [[ -f $enc_file ]]; then
+        print -r -- "[gpg-archive] Skipping '$dir' (already encrypted)."
+        continue
+      fi
+      if [[ -f $tar_file ]]; then
+        print -r -- "[gpg-archive] Skipping '$dir' (tar exists)."
+        continue
+      fi
+
+      print -r -- "[gpg-archive] Archiving: $dir"
+      $TAR_CMD -zcf $tar_file $dir
+
+      print -r -- "[gpg-archive] Encrypting: $tar_file"
+      gpg --batch --yes --encrypt --recipient $GPG_RECIPIENT $tar_file
+
+      print -r -- "[gpg-archive] Encrypted: $enc_file"
+      rm -f $tar_file
+    done
+
+    print -r -- "[gpg-archive] Encryption complete."
+  }
+
+  # ----------------------------------------------------------------------------
+  # Decrypt mode
+  # ----------------------------------------------------------------------------
+  _decrypt() {
+    setopt localoptions nullglob
+
+    local passphrase="$1"; shift
+    local f tar_file dir passphrase
+    for f (*.tar.gz.gpg); do
+      [[ -f $f ]] || continue
+      tar_file=${f%.gpg}
+      dir=${tar_file%.tar.gz}
+
+      if [[ -d $dir ]]; then
+        print -r -- "[gpg-archive] Skipping '$f' (already extracted)."
+        continue
+      fi
+      if [[ -f $tar_file ]]; then
+        print -r -- "[gpg-archive] Skipping '$f' (tar exists)."
+        continue
+      fi
+
+      print -r -- "[gpg-archive] Decrypting: $f"
+      gpg --batch --yes --decrypt \
+          --pinentry-mode loopback \
+          --passphrase $passphrase \
+          --output $tar_file \
+          $f
+
+      print -r -- "[gpg-archive] Extracting: $tar_file"
+      $TAR_CMD -zxf $tar_file
+      print -r -- "[gpg-archive] Extracted: $dir"
+      rm -f $tar_file
+    done
+
+    print -r -- "[gpg-archive] Decryption complete."
+  }
+
+  # ----------------------------------------------------------------------------
+  # Main dispatch
+  # ----------------------------------------------------------------------------
+  if (( $# != 1 )); then
+    _usage
+    return 1
+  fi
+
+  _check_deps || return 1
+
+  case $1 in
+    -c)
+      _encrypt
+      ;;
+    -d)
+      # Fetch passphrase ONCE before decryption
+      print -r -- "[gpg-archive] Fetching passphrase from 1Password (once)..."
+      local passphrase
+      passphrase=$(_get_passphrase) || {
+        _err "Failed to get passphrase from 1Password."
+        return 1
+      }
+      if [[ -z $passphrase ]]; then
+        _err "Passphrase is empty."
+        return 1
+      fi
+
+      # Pass it securely to _decrypt
+      _decrypt "$passphrase"
+
+      # Clear the local copy immediately after use
+      passphrase=""
+      ;;
+    *)
+      _err "Invalid mode: $1"
+      _usage
+      return 1
+      ;;
+  esac
+
+  print -r -- "[gpg-archive] All done."
+}
