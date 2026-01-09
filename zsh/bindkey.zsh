@@ -109,3 +109,10 @@ autopair-init
 
 # Bind the widget to ctrl+g for quick access from the command line.
 bindkey -M viins '^G' custom_open_lazygit
+
+#
+# zsh-easymotion
+#
+
+bindkey -M vicmd '^X/' zsh-easymotion
+bindkey -M viins '^X/' zsh-easymotion
