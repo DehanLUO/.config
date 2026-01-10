@@ -325,10 +325,10 @@ _zsh_easymotion_mode2_raw() {
   local -i _n=1
   # Replace each tab in `_key_labels_str` with `\0<position>`, then append final
   # item.
-  _prompt_items=(
-    ${_key_labels_str//(#m)$'\t'/${_null_char}$_positions[((_n++))] }
-    ${_null_char}$_positions[_n]
-  )
+  local _prompt_str
+  _prompt_str="${_key_labels_str//(#m)$'\t'/${_null_char}$_positions[((_n++))] }"
+  _prompt_str+="${_null_char}$_positions[_n]"
+  _prompt_items=(${(s. .)_prompt_str})
 
   # Start interactive key input loop with:
   # - empty current key sequence,
