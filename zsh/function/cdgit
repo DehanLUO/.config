@@ -16,8 +16,3 @@ function cdgit() {
     return 1
   fi
 }
-
-# If executed directly (not sourced), run the function with passed args.
-if [[ $ZSH_EVAL_CONTEXT == "file" ]]; then
-  cdgit "$@"
-fi

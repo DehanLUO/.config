@@ -35,7 +35,47 @@ function dump-ansi() {
   echo
 }
 
-# If this script is executed directly (not sourced), invoke the function.
-if [[ $ZSH_EVAL_CONTEXT == "file" ]]; then
-  dump-ansi "$@"
-fi
+# The following block must be REMOVED to ensure the autoloaded function behaves
+# correctly on its FIRST invocation in an interactive shell.
+#
+# Rationale (per zshmisc(1), "Autoloading Functions" section):
+# > "If the KSH_AUTOLOAD option is set, or the file contains only a simple
+# > definition of the function, the file's contents will be executed. This will
+# > normally define the function in question, but may also perform
+# > initialization, which is executed in the context of the function execution..."
+#
+# In standard (non-KSH_AUTOLOAD) mode — which applies here because we use
+# `autoload -U` (the `-U` disables ksh-style autoloading) — zsh expects the
+# autoload file to contain ONLY a function definition, e.g.:
+#   funcname() { ... }
+# When this condition is met, zsh treats the entire file as a pure definition.
+# During the first call to `funcname`, the stub triggers loading, the file is
+# sourced, the function is redefined, and — crucially — the original function
+# call proceeds using the newly loaded body. Thus, the user sees the expected
+# effect on the FIRST invocation.
+#
+# However, if the file contains additional top-level code (such as the
+# conditional block below), the file no longer qualifies as "only a simple
+# definition". Consequently, zsh changes its loading behaviour:
+# > "Otherwise, the function body (with no surrounding funcname() {...}') is
+# > taken to be the complete contents of the file... If processing of the file
+# > results in the function being re-defined, the function itself is not
+# > re-executed."
+#
+# This means that during the first call:
+# - The file is sourced (executing any top-level statements),
+# - The function may be redefined,
+# - BUT the original call does NOT re-execute the new function body.
+# As a result, side effects (e.g. guard below) in top-level code run once, while
+# the intended function logic runs only on the SECOND invocation. The
+# conditional guard below — though well-intentioned for scriptability —
+# introduces top-level executable code, thereby breaking the "simple definition"
+# contract required for correct zsh-style autoloading.
+#
+# Therefore, to guarantee that `dump-ansi` produces its output on the very first
+# call (as users expect), this entire runtime dispatch block must be omitted.
+# Autoload files in zsh should contain ONLY the function definition, with no
+# auxiliary logic or conditional execution.
+## if [[ $ZSH_EVAL_CONTEXT == "file" ]]; then
+##  dump-ansi "$@"
+## fi
