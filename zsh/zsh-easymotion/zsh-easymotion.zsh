@@ -314,11 +314,56 @@ _zsh_easymotion_mode2_raw() {
   # Null byte for internal delimiting.
   local _null_char=$'\0'
   # Index starts at last (highest) position due to reverse-sorted `_positions`.
-  local -i _index=_num_targets
+#  local -i _index=_num_targets
   # Replace each match of `_query` in buffer with corresponding key label’s
   # first char. Because `_positions` is sorted descending, replacements don’t
   # affect earlier indices.
-  local _rendered_buffer="${_buffer//(#m)$_query/${_key_labels[_index--][1]}}"
+#  local _rendered_buffer="${_buffer//(#m)$_query/${_key_labels[_index--][1]}}"
+
+  # Build the rendered buffer by overlaying hint labels onto matched positions.
+  # This is done by:
+  #   1. Splitting the original buffer into a mutable character array.
+  #   2. Iterating over match positions from left to right (as stored in
+  #      _positions).
+  #   3. Assigning successive hint keys (e.g. 'a', 'b', 'c'...) to each match.
+  #   4. Replacing the characters at each match position with its corresponding
+  #      hint label.
+  # The result is a visually annotated buffer where matches are temporarily
+  # replaced by hints.
+
+  # Split the current input buffer ($_buffer) into an array of single characters.
+  # The leading ':' suppresses output; ${(s..)...} splits on zero-width
+  # (i.e. every char).
+  local -a _buf_chars
+  : ${(s..)_buf_chars::=$_buffer}
+
+  # Iterate over match positions in their natural (left-to-right) order.
+  # Note: _positions must be a 1-based, ascending list of indices
+  local _i=1 _rep _pos _end
+  for _pos in ${_positions}; do
+    # Fetch the next hint key from the precomputed label list
+    # (e.g. ('a' 'b' 'c' ...)).
+    local _key="$_key_labels[_i++]"
+
+    # Use at most the first two characters of the key as the visual hint.
+    # (This supports multi-character hints like 'aa', 'ab', etc., if needed.)
+    if (( $#_key >= 2 )); then
+      _rep="${_key[1,2]}"
+    else
+      _rep="$_key"
+    fi
+
+    # Calculate the inclusive end index of the segment to replace.
+    # Since Zsh arrays are 1-based and slicing is inclusive, adjust accordingly.
+    _end=$(( _pos + $#_rep - 1 ))
+
+    # Replace the substring in the character array with the split hint label.
+    # ${(s..)_rep} ensures _rep is treated as individual characters.
+    _buf_chars[$_pos,$_end]="${(s..)_rep}"
+  done
+
+  # Rejoin the modified character array into a single string for display.
+  local _rendered_buffer="${(j::)_buf_chars}"
 
   # Prepare prompt items: each is "<key><null><position>", for later parsing.
   local -a _prompt_items
@@ -445,8 +490,11 @@ _zsh_easymotion_keyin_loop() {
   # orange for multi-char keys
   zstyle -s ':zsh-easymotion:*' fg-multi _highlight_multi_spec \
     || _highlight_multi_spec='fg=208,bold' 
+  # dark brown for second character in multi-char keys
+  zstyle -s ':zsh-easymotion:*' fg-multi-second _highlight_multi_second_spec \
+    || _highlight_multi_second_spec='fg=94,bold'
   # dim background
-  zstyle -s ':zsh-easymotion:*' bg _dim_spec || _dim_spec='fg=black,bold'
+  zstyle -s ':zsh-easymotion:*' bg _dim_spec || _dim_spec='fg=239,bold'
   # Delegate to raw implementation with styles.
   _zsh_easymotion_keyin_loop_raw \
     "$@"
@@ -507,7 +555,10 @@ _zsh_easymotion_keyin_loop_raw() {
       if (( $#_key == 1 )); then
         _single_highlights+=("$(( _pos - 1 )) $_pos $_highlight_spec")
       else
+        # Highlight first character of multi-character key.
         _multi_highlights+=("$(( _pos - 1 )) $_pos $_highlight_multi_spec")
+        # Highlight second character if the key has at least two characters.
+        _multi_highlights+=("$_pos $(( _pos + 1 )) $_highlight_multi_second_spec")
       fi
     done
 
