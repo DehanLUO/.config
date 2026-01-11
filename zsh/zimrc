@@ -19,6 +19,9 @@ zmodule input
 zmodule termtitle
 # Utility aliases and functions. Adds colour to ls, grep and less.
 zmodule utility
+
+# <-- Normally new modules should be added here. Check each module documentation
+# for any caveats.
 # Fast directory listing with file previews and colors, like a modern 'ls'.
 # [Repo](https://github.com/supercrabtree/k)
 # !Requirements:
@@ -30,9 +33,8 @@ zmodule supercrabtree/k
 # Usage:
 #   `z -h`    Display help
 zmodule agkozak/zsh-z
-
-# <-- Normally new modules should be added here. Check each module documentation
-# for any caveats.
+# Jump to any character in your Zsh command line.
+zmodule DehanLUO/zsh-easymotion
 
 #
 # Prompt
