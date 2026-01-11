@@ -30,7 +30,7 @@
 #   finder-rename [OPTIONS] PREFIX
 # ==============================================================================
 
-finder-rename() {
+function finder-rename() {
   emulate -LR zsh
   # Do not use 'set -e' in interactive functions; handle errors explicitly.
 
@@ -69,7 +69,7 @@ finder-rename() {
   # Outputs:
   #   Formatted error to stderr.
   # ----------------------------------------------------------------------------
-  _err() {
+  function _err() {
     print -r -- \
       "[$(date +'%Y-%m-%dT%H:%M:%S%z')]: ${SCRIPT_NAME}: ${COLOR_RED}ERROR${COLOR_NC}: $*" >&2
   }
@@ -81,7 +81,7 @@ finder-rename() {
   # Outputs:
   #   Formatted warning to stderr.
   # ----------------------------------------------------------------------------
-  _warn() {
+  function _warn() {
     print -r -- \
       "[$(date +'%Y-%m-%dT%H:%M:%S%z')]: ${SCRIPT_NAME}: ${COLOR_YELLOW}WARNING${COLOR_NC}: $*" >&2
   }
@@ -93,7 +93,7 @@ finder-rename() {
   # Outputs:
   #   Formatted info to stdout.
   # ----------------------------------------------------------------------------
-  _info() {
+  function _info() {
     print -r -- \
       "[$(date +'%Y-%m-%dT%H:%M:%S%z')]: ${SCRIPT_NAME}: ${COLOR_BLUE}INFO${COLOR_NC}: $*"
   }
@@ -105,7 +105,7 @@ finder-rename() {
   # Outputs:
   #   Formatted success to stdout.
   # ----------------------------------------------------------------------------
-  _success() {
+  function _success() {
     print -r -- \
       "[$(date +'%Y-%m-%dT%H:%M:%S%z')]: ${SCRIPT_NAME}: ${COLOR_GREEN}SUCCESS${COLOR_NC}: $*"
   }
@@ -117,7 +117,7 @@ finder-rename() {
   # Outputs:
   #   Width integer.
   # ----------------------------------------------------------------------------
-  _get_display_width() {
+  function _get_display_width() {
     local str="$1" char_count=0 i char char_code
 
     for (( i = 0; i < ${#str}; i++ )); do
@@ -141,7 +141,7 @@ finder-rename() {
   # Returns:
   #   0 on success; 1 on failure.
   # ----------------------------------------------------------------------------
-  _get_finder_selection() {
+  function _get_finder_selection() {
     local osascript_output file_path
 
     osascript_output=$(osascript -e '
@@ -193,7 +193,7 @@ end tell
   # Outputs:
   #   Extension or empty string.
   # ----------------------------------------------------------------------------
-  _get_file_extension() {
+  function _get_file_extension() {
     local filename
     filename=$(basename -- "$1")
 
@@ -211,7 +211,7 @@ end tell
   # Outputs:
   #   Base name.
   # ----------------------------------------------------------------------------
-  _get_base_filename() {
+  function _get_base_filename() {
     basename -- "$1"
   }
 
@@ -224,7 +224,7 @@ end tell
   # Returns:
   #   0 on success; 1 on error.
   # ----------------------------------------------------------------------------
-  _validate_reduce_minutes() {
+  function _validate_reduce_minutes() {
     local mins="$1"
 
     if ! [[ "$mins" =~ ^[0-9]+$ ]]; then
@@ -251,7 +251,7 @@ end tell
   # Returns:
   #   0 on success; 1 on error.
   # ----------------------------------------------------------------------------
-  _validate_timezone() {
+  function _validate_timezone() {
     local tz="$1" valid_tz
 
     for valid_tz in "${VALID_TIMEZONES[@]}"; do
@@ -274,7 +274,7 @@ end tell
   # Returns:
   #   0 on success; 1 on error.
   # ----------------------------------------------------------------------------
-  _apply_minute_reduction() {
+  function _apply_minute_reduction() {
     local time_str="$1" reduce_mins="$2"
 
     command -v gdate >/dev/null || {
@@ -311,7 +311,7 @@ end tell
   # Returns:
   #   0 on success; 1 on error.
   # ----------------------------------------------------------------------------
-  _convert_time_to_timezone() {
+  function _convert_time_to_timezone() {
     local time_str="$1" target_tz="$2"
 
     command -v gdate >/dev/null || {
@@ -378,7 +378,7 @@ end tell
   # Returns:
   #   0 on success; 1 on error.
   # ----------------------------------------------------------------------------
-  _process_time_prefix() {
+  function _process_time_prefix() {
     local temp_time="$prefix"
 
     if (( reduce_minutes > 0 )); then
@@ -401,7 +401,7 @@ end tell
   # Outputs:
   #   New full path.
   # ----------------------------------------------------------------------------
-  _generate_new_filename() {
+  function _generate_new_filename() {
     local orig="$1" seq="$2"
 
     local dir ext base
@@ -422,7 +422,7 @@ end tell
   # Globals:
   #   selected_files, prefix
   # ----------------------------------------------------------------------------
-  _show_rename_preview() {
+  function _show_rename_preview() {
     local max_width=0 i orig base new w
     print -r -- "${COLOR_BLUE}Rename Preview:${COLOR_NC}"
 
@@ -453,7 +453,7 @@ end tell
   # Returns:
   #   0 on full success; 1 if any failed.
   # ----------------------------------------------------------------------------
-  _perform_renaming() {
+  function _perform_renaming() {
     local success_count=0 fail_count=0 i orig new seq
     local max_index=$(( ${#selected_files[@]} - 1 ))
     local seq_width=$(( ${#max_index} > 1 ? ${#max_index} : 2 ))
@@ -484,7 +484,7 @@ end tell
   # ----------------------------------------------------------------------------
   # Helper: display usage.
   # ----------------------------------------------------------------------------
-  _usage() {
+  function _usage() {
     cat <<EOF
 Usage: finder-rename [OPTIONS] PREFIX
 
@@ -518,7 +518,7 @@ EOF
   # Returns:
   #   0 on success; 1 on error.
   # ----------------------------------------------------------------------------
-  _parse_arguments() {
+  function _parse_arguments() {
     local args=() opt
     while (( $# > 0 )); do
       opt="$1"
@@ -597,7 +597,7 @@ EOF
   # Returns:
   #   0 on macOS; 1 otherwise.
   # ----------------------------------------------------------------------------
-  _validate_environment() {
+  function _validate_environment() {
     [[ "$(uname -s)" == "Darwin" ]] || {
       _err "This function requires macOS (Darwin)." && return 1
     }

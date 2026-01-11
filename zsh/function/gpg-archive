@@ -20,7 +20,7 @@
 #   - Decryption fetches passphrase from 1Password vault at runtime.
 # ==============================================================================
 
-gpg-archive() {
+function gpg-archive() {
   emulate -LR zsh
 
   # Do not use 'set -e' in autoloadable Zsh functions intended for interactive
@@ -35,14 +35,14 @@ gpg-archive() {
   # ----------------------------------------------------------------------------
   # Helper: print error
   # ----------------------------------------------------------------------------
-  _err() {
+  function _err() {
     print -r -- "[gpg-archive] Error: $*" >&2
   }
 
   # --------------------------------------------------------------------------- 
   # Helper: usage
   # --------------------------------------------------------------------------- 
-  _usage() {
+  function _usage() {
     print -r -- "Usage:"
     print -r -- "  gpg-archive -c  Encrypt directories (public-key)."
     print -r -- "  gpg-archive -d  Decrypt .tar.gz.gpg (passphrase from 1Password)."
@@ -51,7 +51,7 @@ gpg-archive() {
   # ----------------------------------------------------------------------------
   # Check dependencies
   # ----------------------------------------------------------------------------
-  _check_deps() {
+  function _check_deps() {
     local missing=()
     for cmd in $TAR_CMD gpg op; do
       (( ${+commands[$cmd]} )) || missing+=($cmd)
@@ -67,14 +67,14 @@ gpg-archive() {
   # ----------------------------------------------------------------------------
   # Get passphrase from 1Password
   # ----------------------------------------------------------------------------
-  _get_passphrase() {
+  function _get_passphrase() {
     op read $OP_PASSPHRASE_REF 2>/dev/null
   }
 
   # ----------------------------------------------------------------------------
   # Encrypt mode
   # ----------------------------------------------------------------------------
-  _encrypt() {
+  function _encrypt() {
     setopt localoptions nullglob dotglob
 
     local dir archive tar_file enc_file
@@ -117,7 +117,7 @@ gpg-archive() {
   # ----------------------------------------------------------------------------
   # Decrypt mode
   # ----------------------------------------------------------------------------
-  _decrypt() {
+  function _decrypt() {
     setopt localoptions nullglob
 
     local passphrase="$1"; shift
