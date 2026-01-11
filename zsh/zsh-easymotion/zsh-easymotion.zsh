@@ -190,14 +190,22 @@ _zsh_easymotion_mode1() {
   # Define a glob pattern matching the escape sequence followed by digits.
   local _escape_pattern=$'\e\e [[:digit:]]##(#e)'
 
-  # Extract match positions using parameter expansion:
-  # - Replace every match of `_query` with `_escape_ok<position>\0`
-  #   using `(#b)` to capture match start (`mbegin[1]`).
-  # - Split result on null bytes (`(0)`).
-  # - Filter only items matching `_escape_pattern` (`(M)`)
+  # Core matching and position extraction in a single expression:
+  # 1. ${(S)_buffer//*(#b)($~_query)/...}
+  #    - (S) searches for matches across the entire buffer
+  #    - * matches any preceding characters
+  #    - (#b) enables backreferences (capture groups)
+  #    - ($~_query) interprets $_query as a pattern (~ flag)
+  #    - Replace each match with: marker + position + null byte
+  # 2. ${(0)...}
+  #    - Split the result on null bytes (0 flag)
+  # 3. ${(M)...:#${~_escape_pattern}}
+  #    - (M) keeps only elements matching the escape pattern
+  #    - :# filters out elements NOT matching the pattern
+  #    - ${~_escape_pattern} interprets pattern string as glob
   local -a _match_positions
   _match_positions=(
-    ${(M)${(0)${(S)_buffer//*(#b)($_query)/${_escape_ok}$mbegin[1]$_null_char}}:#${~_escape_pattern}}
+    ${(M)${(0)${(S)_buffer//*(#b)($~_query)/${_escape_ok}$mbegin[1]$_null_char}}:#${~_escape_pattern}}
   )
   # Strip the `_escape_ok` prefix from each item to leave only position numbers.
   _match_positions=( ${_match_positions#${_escape_ok}} )
@@ -703,14 +711,22 @@ _zsh_easymotion_mode1_call() {
 
   local _query
   # Case-insensitive: match both lower and upper forms.
+  # Condition: mode is ignorecase AND input is an alphabetic character.
   if [[ "$_case_mode" == ignorecase && "$_char" == [[:lower:][:upper:]] ]]; then
-    # Use `(b)` flag for backslash-escaping special regex chars like '['.
-    _query="[${(bL)_char}${(bU)_char}]"
+    # Build regex character class with both cases.
+    # (L) converts to lowercase, (U) converts to uppercase.
+    _query="[${(L)_char}${(U)_char}]"
   # Smartcase: if input is lowercase, match both cases; else literal.
+  # Condition: mode is smartcase AND input is a lowercase letter.
   elif [[ "$_case_mode" == smartcase && "$_char" == [[:lower:]] ]]; then
-    # Literal match: escape special characters only.
-    _query="[${(b)_char}${(bU)_char}]"
+    # Build character class: original lowercase + escaped uppercase.
+    # Lowercase letters match both lower and upper case versions.
+    _query="[${_char}${(U)_char}]"
+  # Default case: literal matching (no case folding).
+  # This handles uppercase in smartcase mode, digits, symbols, etc.
   else
+    # Escape any regex metacharacters in the input character.
+    # (b) flag ensures characters like '[', ']', '.' are escaped as '\[', etc.
     _query="${(b)_char}"
   fi
 
