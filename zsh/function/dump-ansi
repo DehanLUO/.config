@@ -1,0 +1,41 @@
+#!/usr/bin/env zsh
+# vim:ft=zsh
+
+################################################################################
+# Display ANSI 256-colour palette in both normal and bold intensities.
+#
+# This function prints two grids of the 256-colour ANSI palette:
+# - The first grid uses standard (non-bold) foreground colours.
+# - The second grid applies the bold (intensity-increased) attribute to each
+#   colour, which may appear as brighter or truly bold depending on the
+#   terminal emulator's implementation.
+#
+# Each colour is displayed with its numeric index (0–255), arranged in rows of
+# 16 entries for readability. All ANSI formatting is properly reset after each
+# entry to avoid style leakage.
+#
+# @note Terminal support for bold varies; some render bold as brighter colours
+#       rather than typographic bolding.
+################################################################################
+function dump-ansi() {
+  local i
+
+  echo "Normal:"
+  for i in {0..255}; do
+    printf "\e[38;5;%dm%3d\e[0m " $i $i
+    (( (i + 1) % 16 == 0 )) && echo
+  done
+
+  echo -e "\nBold:"
+  for i in {0..255}; do
+    printf "\e[1;38;5;%dm%3d\e[0m " $i $i
+    (( (i + 1) % 16 == 0 )) && echo
+  done
+
+  echo
+}
+
+# If this script is executed directly (not sourced), invoke the function.
+if [[ $ZSH_EVAL_CONTEXT == "file" ]]; then
+  dump-ansi "$@"
+fi
