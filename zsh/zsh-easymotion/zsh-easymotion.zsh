@@ -449,9 +449,6 @@ _zsh_easymotion_keyin_loop() {
   zstyle -s ':zsh-easymotion:*' bg _dim_spec || _dim_spec='fg=black,bold'
   # Delegate to raw implementation with styles.
   _zsh_easymotion_keyin_loop_raw \
-    "$_highlight_spec" \
-    "$_highlight_multi_spec" \
-    "$_dim_spec" \
     "$@"
 }
 
@@ -460,9 +457,6 @@ _zsh_easymotion_keyin_loop() {
 #
 # Manages ZLE region highlights and recursive key accumulation.
 #
-# @param[in] _highlight_style
-# @param[in] _highlight_multi_style
-# @param[in] _dim_style
 # @param[in] _current_key_seq
 # @param[in] _original_buffer
 # @param[in] _new_buffer
@@ -475,10 +469,6 @@ _zsh_easymotion_keyin_loop() {
 _zsh_easymotion_keyin_loop_raw() {
   # Enable extended globbing.
   setopt localoptions extendedglob
-  # Extract styling parameters.
-  local _highlight_style="$1"; shift
-  local _highlight_multi_style="$1"; shift
-  local _dim_style="$1"; shift
   # Current accumulated key sequence (e.g., "a", "ab", etc.)
   local _current_key_seq="$1"; shift
   local _original_buffer="$1"; shift
@@ -515,9 +505,9 @@ _zsh_easymotion_keyin_loop_raw() {
       _key=${_item%$'\0'*}
       _pos=${_item#*$'\0'}
       if (( $#_key == 1 )); then
-        _single_highlights+=("$(( _pos - 1 )) $_pos $_highlight_style")
+        _single_highlights+=("$(( _pos - 1 )) $_pos $_highlight_spec")
       else
-        _multi_highlights+=("$(( _pos - 1 )) $_pos $_highlight_multi_style")
+        _multi_highlights+=("$(( _pos - 1 )) $_pos $_highlight_multi_spec")
       fi
     done
 
@@ -542,7 +532,7 @@ _zsh_easymotion_keyin_loop_raw() {
     region_highlight=("0 $#BUFFER $_dim_style")
     # Highlight only positions that match current prefix.
     region_highlight+=(
-      ${${${(M)@:#$_current_key_seq*}#*$'\0'}/(#m)[[:digit:]]##/$((MATCH-1)) $MATCH $_highlight_style}
+      ${${${(M)@:#$_current_key_seq*}#*$'\0'}/(#m)[[:digit:]]##/$((MATCH-1)) $MATCH $_highlight_spec}
     )
   fi
   # Redraw ZLE with new highlights.
@@ -553,9 +543,6 @@ _zsh_easymotion_keyin_loop_raw() {
   if $_read_func _next_char; then
     # Recurse with extended key sequence and filtered candidates.
     _zsh_easymotion_keyin_loop_raw \
-      "$_highlight_style" \
-      "$_highlight_multi_style" \
-      "$_dim_style" \
       "$_current_key_seq$_next_char" \
       "$_original_buffer" \
       "$_new_buffer" \
