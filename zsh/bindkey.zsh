@@ -114,5 +114,9 @@ bindkey -M viins '^G' custom_open_lazygit
 # zsh-easymotion
 #
 
-bindkey -M vicmd '^X/' zsh-easymotion
-bindkey -M viins '^X/' zsh-easymotion
+bindkey -M vicmd '^Xw' zsh-easymotion-word
+bindkey -M viins '^Xw' zsh-easymotion-word
+bindkey -M vicmd '^Xe' zsh-easymotion-end
+bindkey -M viins '^Xe' zsh-easymotion-end
+bindkey -M vicmd '^Xf' zsh-easymotion-search
+bindkey -M viins '^Xf' zsh-easymotion-search
