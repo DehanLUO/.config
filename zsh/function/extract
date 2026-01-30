@@ -1,0 +1,754 @@
+#!/usr/bin/env zsh
+
+################################################################################
+# extract
+#   Main extraction function that handles multiple archive formats.
+#   This function provides a unified interface for extracting various
+#   compression and archive formats commonly encountered.
+# Arguments:
+#   <archive_files> [IN] - One or more archive file paths to extract
+#   - <extension>        - Special case for stdin extraction
+#   --auto-unmount       - Automatically unmount .dmg files after extraction
+# Returns:
+#   0 - All extractions successful
+#   1 - One or more extractions failed
+################################################################################
+function extract {
+  # ============================================================================
+  # INTERNAL FUNCTIONS
+  # ============================================================================
+
+  ##############################################################################
+  # _cleanup_temporary_files
+  #   Cleans up temporary files created during extraction. This function is
+  #   registered as a trap handler to ensure cleanup even on interruption.
+  # Arguments:
+  #   None
+  # Returns:
+  #   None
+  ##############################################################################
+  function _cleanup_temporary_files {
+    if [[ -n "$_temp_files" && ${#_temp_files[@]} -gt 0 ]]; then
+      for _temp_file in "${_temp_files[@]}"; do
+        if [[ -e "$_temp_file" ]]; then
+          rm -f "$_temp_file" 2>/dev/null
+        fi
+      done
+    fi
+
+    # Also clean up any mounted DMG directories if auto-unmount is enabled
+    if [[ "$_auto_unmount" == "true" \
+      && -n "$_mounted_dmgs" && ${#_mounted_dmgs[@]} -gt 0 ]]; then
+      for _mnt_dir in "${_mounted_dmgs[@]}"; do
+        if [[ -d "$_mnt_dir" ]]; then
+          # Try to unmount first, then remove directory
+          if mount | grep -q "$_mnt_dir"; then
+            $_hdutil_command unmount "$_mnt_dir" 2>/dev/null || true
+          fi
+          rm -rf "$_mnt_dir" 2>/dev/null
+        fi
+      done
+    fi
+  }
+
+  ##############################################################################
+  # _validate_required_command
+  #   Checks if a specific command is available and provides a helpful
+  #   error message if it is not found. This is used to validate only
+  #   the commands needed for the current extraction operation.
+  # Arguments:
+  #   $1 [IN] - The command name to validate (without arguments)
+  # Returns:
+  #   0 - Command is available
+  #   1 - Command is not available
+  ##############################################################################
+  function _validate_required_command {
+    local _command_name="$1"
+
+    if ! command -v "$_command_name" >/dev/null 2>&1; then
+      print -u2 "Error: Required command '$_command_name' is not available"
+      print -u2 "       Please install the appropriate package and try again"
+      return 1
+    fi
+
+    return 0
+  }
+
+  ##############################################################################
+  # _validate_file_exists
+  #   Checks if a specified file exists and is a regular file.
+  # Arguments:
+  #   $1 [IN] - The path to the file to validate
+  # Returns:
+  #   0 - File exists and is a regular file
+  #   1 - File does not exist or is not a regular file
+  ##############################################################################
+  function _validate_file_exists {
+    local _file_path="$1"
+
+    if [[ ! -e "$_file_path" ]]; then
+      print -u2 "Error: File '$_file_path' does not exist"
+      return 1
+    fi
+
+    if [[ ! -f "$_file_path" ]]; then
+      print -u2 "Error: '$_file_path' is not a regular file"
+      return 1
+    fi
+
+    return 0
+  }
+
+  ##############################################################################
+  # _is_valid_appimage
+  #   Checks if a file is a valid AppImage by examining its magic bytes.
+  #   This prevents accidental execution of non-AppImage files.
+  # Arguments:
+  #   $1 [IN] - The path to the file to validate
+  # Returns:
+  #   0 - File is a valid AppImage
+  #   1 - File is not a valid AppImage
+  ##############################################################################
+  function _is_valid_appimage {
+    local _file_path="$1"
+
+    # Check file command output for AppImage signature
+    if command -v file >/dev/null 2>&1; then
+      local _file_output
+      _file_output=$(file -b "$_file_path" 2>/dev/null)
+
+      # Check for AppImage magic bytes in file output
+      if [[ "$_file_output" == *"ELF"* ]] && 
+         [[ "$_file_output" == *"executable"* ]] &&
+         [[ "$_file_output" == *"AppImage"* ]]; then
+        return 0
+      fi
+
+      # Also check for the AppImage magic bytes directly
+      if [[ -r "$_file_path" ]]; then
+        local _magic_bytes
+        _magic_bytes=$(dd if="$_file_path" bs=1 count=3 2>/dev/null \
+          | od -An -tx1 \
+          | tr -d ' \n')
+        if [[ "$_magic_bytes" == "7f454c46" ]]; then  # ELF magic
+          # Check for AppImage trailer offset
+          local _appimage_offset
+          _appimage_offset=$(tail -c 8 "$_file_path" 2>/dev/null \
+            | od -An -tu8 \
+            | tr -d ' \n')
+          if [[ -n "$_appimage_offset" && "$_appimage_offset" -gt 0 ]]; then
+            return 0
+          fi
+        fi
+      fi
+    fi
+
+    # If file command is not available, check for .appimage extension and executable bit
+    if [[ -x "$_file_path" && "$_file_path" == *.appimage ]]; then
+      print -u2 "Warning: Cannot verify AppImage signature, proceeding based on extension"
+      return 0
+    fi
+
+    print -u2 "Error: '$1' does not appear to be a valid AppImage file"
+    return 1
+  }
+
+  ##############################################################################
+  # _extract_from_stdin
+  #   Handles extraction from standard input by saving to a temporary file.
+  # Arguments:
+  #   $1 [IN] - The file extension for the stdin data
+  # Returns:
+  #   0 - Extraction successful
+  #   1 - Extraction failed
+  ##############################################################################
+  function _extract_from_stdin {
+    local _extension="$1"
+    local _tmpfile
+
+    # Create a temporary file with the appropriate extension
+    _tmpfile=$(mktemp "/tmp/extract.stdin.XXXXXX.$_extension")
+
+    # Register for cleanup
+    _temp_files+=("$_tmpfile")
+
+    # Save stdin to the temporary file
+    cat > "$_tmpfile"
+
+    print "Saved stdin to temporary file: $_tmpfile"
+
+    # Extract the temporary file (recursive call)
+    if extract "$_tmpfile"; then
+      # Remove from temp files list since extraction succeeded
+      _temp_files=("${_temp_files[@]/$_tmpfile}")
+      # Clean up the temporary file
+      rm -f "$_tmpfile"
+      return 0
+    else
+      return 1
+    fi
+  }
+
+  ##############################################################################
+  # _extract_tar_variant
+  #   Extracts various tar-based archive formats with appropriate options.
+  # Arguments:
+  #   $1 [IN] - The path to the archive file
+  #   $2 [IN] - Optional compression-specific flags
+  # Returns:
+  #   0 - Extraction successful
+  #   1 - Extraction failed
+  ##############################################################################
+  function _extract_tar_variant {
+    local _archive_path="$1"
+    local _compress_flags="${2:-}"
+
+    if [[ -n "$_compress_flags" ]]; then
+      $_tar_command $_compress_flags -xvf "$_archive_path"
+    else
+      $_tar_command -xvf "$_archive_path"
+    fi
+
+    return $?
+  }
+
+  ##############################################################################
+  # _determine_required_commands
+  #   Determines which external commands are required based on the
+  #   file extension. This optimises validation to only check commands
+  #   that will actually be used.
+  # Arguments:
+  #   $1 [IN] - The normalised file path (with extension)
+  # Returns:
+  #   Space-separated list of required command names
+  ##############################################################################
+  function _determine_required_commands {
+    local _normalised_file="$1"
+    local -a _required_commands=()
+
+    # Convert to lowercase for case-insensitive matching
+    local _lowercase_file="${_normalised_file:l}"
+
+    case "$_lowercase_file" in
+      # Tar-based formats
+      *.tar.bz2|*.tbz2|*.tar.gz|*.tgz|*.tar.xz|*.txz|*.tar.zst|*.tar.lz4|*.tar.br|*.tar)
+        _required_commands+=("${_tar_command:-gtar}")
+        ;;
+
+      # Simple compression formats
+      *.lzma)
+        _required_commands+=("unlzma")
+        ;;
+      *.lz4)
+        _required_commands+=("${_lz4_command:-lz4}")
+        ;;
+      *.bz2)
+        _required_commands+=("bunzip2")
+        ;;
+      *.gz)
+        _required_commands+=("gunzip")
+        ;;
+      *.xz)
+        _required_commands+=("unxz")
+        ;;
+      *.z)
+        _required_commands+=("uncompress")
+        ;;
+      *.zst)
+        _required_commands+=("${_zstd_command:-zstd}")
+        ;;
+      *.zlib)
+        _required_commands+=("zlib-flate")
+        ;;
+
+      # Archive formats requiring specialised tools
+      *.cbr|*.rar)
+        _required_commands+=("${_unrar_command:-unrar}")
+        ;;
+      *.cbz|*.epub|*.zip)
+        _required_commands+=("${_unzip_command:-unzip}")
+        ;;
+      *.7z|*.apk|*.arj|*.cab|*.cb7|*.chm|*.deb|*.iso|*.lzh|*.msi|*.pkg|*.rpm|*.udf|*.wim|*.xar|*.vhd)
+        _required_commands+=("${_sevenz_command:-7z}")
+        ;;
+      *.exe)
+        _required_commands+=("${_cabext_command:-cabextract}")
+        ;;
+      *.cpio)
+        _required_commands+=("${_cpio_command:-cpio}")
+        ;;
+      *.cba|*.ace)
+        _required_commands+=("${_unace_command:-unace}")
+        ;;
+      *.zpaq)
+        _required_commands+=("${_zpaq_command:-zpaq}")
+        ;;
+      *.arc)
+        _required_commands+=("${_arc_command:-arc}")
+        ;;
+
+      # Specialised formats
+      *.cso)
+        _required_commands+=("ciso")
+        ;;
+      *.dmg)
+        _required_commands+=("${_hdutil_command:-hdiutil}")
+        ;;
+      *.appimage)
+        # appimage uses built-in extraction, no external command needed
+        ;;
+    esac
+
+    # For tar with specific compressors, add those too
+    case "$_lowercase_file" in
+      *.tar.lz4)
+        _required_commands+=("${_lz4_command:-lz4}")
+        ;;
+      *.tar.br)
+        _required_commands+=("pbzip2")
+        ;;
+      *.tar.zst)
+        _required_commands+=("${_zstd_command:-zstd}")
+        ;;
+    esac
+
+    # Return unique commands
+    print -l ${(u)_required_commands}
+    return 0
+  }
+
+  # ============================================================================
+  # INITIALISATION AND CONFIGURATION
+  # ============================================================================
+
+  # Setup cleanup trap
+  local -a _temp_files=()
+  local -a _mounted_dmgs=()
+  local _auto_unmount="false"
+
+  trap '_cleanup_temporary_files' EXIT INT TERM
+
+  # Process command-line options
+  local -a _files_to_process=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --auto-unmount)
+        _auto_unmount="true"
+        shift
+        ;;
+      --help|-h)
+        cat << 'EOF'
+Usage: extract [OPTIONS] <archive_files...>
+  extract <path/file_name>.<zip|rar|bz2|gz|tar|tbz2|tgz|Z|7z|xz|ex|tar.bz2|tar.gz|tar.xz|.zlib|.cso|.zst>
+  extract <path/file_name_1.ext> [path/file_name_2.ext] [path/file_name_3.ext]
+  extract - <extension>  (extract from stdin)
+
+Options:
+  --auto-unmount    Automatically unmount .dmg files after extraction
+  --help, -h        Show this help message
+
+Supported formats include:
+  - Standard archives: .zip, .rar, .tar, .7z, .gz, .bz2, .xz, .zst
+  - Compound archives: .tar.gz, .tar.bz2, .tar.xz, .tar.zst
+  - Special formats: .dmg, .iso, .exe (cabinet), .deb, .rpm
+  - Legacy formats: .Z, .arj, .lzh, .ace, .zpaq
+
+Examples:
+  $ extract document.zip
+  $ extract archive.tar.gz
+  $ extract --auto-unmount disk_image.dmg
+  $ extract - zip < archive.zip
+EOF
+        return 0
+        ;;
+      -*)
+        print -u2 "Error: Unknown option '$1'"
+        return 1
+        ;;
+      *)
+        _files_to_process+=("$1")
+        shift
+        ;;
+    esac
+  done
+
+  # Restore files to process
+  set -- "${_files_to_process[@]}"
+
+  # Display usage if no arguments provided
+  if [[ $# -eq 0 ]]; then
+    print -u2 "Error: No archive files specified"
+    print -u2 "Use 'extract --help' for usage information"
+    return 1
+  fi
+
+  # Define external command aliases with fallback mechanisms
+  local _tar_command="${TAR:-gtar}"
+  local _unzip_command="${UNZIP:-unzip}"
+  local _unrar_command="${UNRAR:-unrar}"
+  local _sevenz_command="${SEVENZ:-7z}"
+  local _cabext_command="${CABEXT:-cabextract}"
+  local _unace_command="${UNACE:-unace}"
+  local _zpaq_command="${ZPAQ:-zpaq}"
+  local _arc_command="${ARC:-arc}"
+  local _zstd_command="${ZSTD:-zstd}"
+  local _lz4_command="${LZ4:-lz4}"
+  local _hdutil_command="${HDUTIL:-hdiutil}"
+  local _cpio_command="${CPIO:-cpio}"
+
+  # ============================================================================
+  # MAIN EXTRACTION LOGIC
+  # ============================================================================
+
+  local _saveifs="$IFS"
+  IFS=$' \t\n'
+
+  local _exit_code=0
+  local _processed_count=0
+
+  # Process each argument
+  while [[ $# -gt 0 ]]; do
+    local _current_file="$1"
+    shift
+
+    # Handle stdin extraction
+    if [[ "$_current_file" == "-" ]]; then
+      if [[ -z "$1" ]]; then
+        print -u2 "Error: must provide file extension after '-' for stdin extraction"
+        _exit_code=1
+        break
+      fi
+
+      local _stdin_extension="$1"
+      shift
+
+      if ! _extract_from_stdin "$_stdin_extension"; then
+        _exit_code=1
+      fi
+
+      ((++_processed_count))
+      continue
+    fi
+
+    # Validate file existence
+    if ! _validate_file_exists "$_current_file"; then
+      _exit_code=1
+      continue
+    fi
+
+    # Remove trailing commas (sometimes present in file listings)
+    local _normalised_file="${_current_file%,}"
+
+    # Convert to lowercase for case-insensitive matching
+    local _lowercase_file="${_normalised_file:l}"
+
+    # Determine and validate required commands for this specific file
+    local _required_commands
+    _required_commands=$(_determine_required_commands "$_normalised_file")
+
+    local _command_validation_failed=0
+    for _cmd in ${(f)_required_commands}; do
+      if ! _validate_required_command "$_cmd"; then
+        _command_validation_failed=1
+        break
+      fi
+    done
+
+    if [[ $_command_validation_failed -eq 1 ]]; then
+      _exit_code=1
+      continue
+    fi
+
+    # Process based on file extension (case-insensitive)
+    case "$_lowercase_file" in
+      # Tar-based formats with various compression
+      *.tar.bz2|*.tbz2)
+        if ! _extract_tar_variant "$_normalised_file" "--bzip2"; then
+          print -u2 "Warning: Extraction of '$_normalised_file' may have failed"
+          _exit_code=1
+        else
+          ((++_processed_count))
+        fi
+        ;;
+
+      *.tar.gz|*.tgz)
+        if ! _extract_tar_variant "$_normalised_file" "--gzip"; then
+          print -u2 "Warning: Extraction of '$_normalised_file' may have failed"
+          _exit_code=1
+        else
+          ((++_processed_count))
+        fi
+        ;;
+
+      *.tar.xz|*.txz)
+        if ! _extract_tar_variant "$_normalised_file" "--xz"; then
+          print -u2 "Warning: Extraction of '$_normalised_file' may have failed"
+          _exit_code=1
+        else
+          ((++_processed_count))
+        fi
+        ;;
+
+      *.tar.zst)
+        if ! _extract_tar_variant "$_normalised_file" "--zstd"; then
+          print -u2 "Warning: Extraction of '$_normalised_file' may have failed"
+          _exit_code=1
+        else
+          ((++_processed_count))
+        fi
+        ;;
+
+      *.tar.lz4)
+        if ! $_tar_command --use-compress-program="$_lz4_command" -xvf "$_normalised_file"; then
+          print -u2 "Warning: Extraction of '$_normalised_file' may have failed"
+          _exit_code=1
+        else
+          ((++_processed_count))
+        fi
+        ;;
+
+      *.tar.br)
+        if ! $_tar_command --use-compress-program="pbzip2" -xvf "$_normalised_file"; then
+          print -u2 "Warning: Extraction of '$_normalised_file' may have failed"
+          _exit_code=1
+        else
+          ((++_processed_count))
+        fi
+        ;;
+
+      *.tar)
+        if ! _extract_tar_variant "$_normalised_file"; then
+          print -u2 "Warning: Extraction of '$_normalised_file' may have failed"
+          _exit_code=1
+        else
+          ((++_processed_count))
+        fi
+        ;;
+
+      # Simple compression formats
+      *.lzma)
+        if ! unlzma "$_normalised_file"; then
+          print -u2 "Warning: Extraction of '$_normalised_file' may have failed"
+          _exit_code=1
+        else
+          ((++_processed_count))
+        fi
+        ;;
+
+      *.lz4)
+        if ! $_lz4_command -d "$_normalised_file"; then
+          print -u2 "Warning: Extraction of '$_normalised_file' may have failed"
+          _exit_code=1
+        else
+          ((++_processed_count))
+        fi
+        ;;
+
+      *.bz2)
+        if ! bunzip2 "$_normalised_file"; then
+          print -u2 "Warning: Extraction of '$_normalised_file' may have failed"
+          _exit_code=1
+        else
+          ((++_processed_count))
+        fi
+        ;;
+
+      *.gz)
+        if ! gunzip "$_normalised_file"; then
+          print -u2 "Warning: Extraction of '$_normalised_file' may have failed"
+          _exit_code=1
+        else
+          ((++_processed_count))
+        fi
+        ;;
+
+      *.xz)
+        if ! unxz "$_normalised_file"; then
+          print -u2 "Warning: Extraction of '$_normalised_file' may have failed"
+          _exit_code=1
+        else
+          ((++_processed_count))
+        fi
+        ;;
+
+      *.z)
+        if ! uncompress "$_normalised_file"; then
+          print -u2 "Warning: Extraction of '$_normalised_file' may have failed"
+          _exit_code=1
+        else
+          ((++_processed_count))
+        fi
+        ;;
+
+      *.zst)
+        if ! $_zstd_command -d "$_normalised_file"; then
+          print -u2 "Warning: Extraction of '$_normalised_file' may have failed"
+          _exit_code=1
+        else
+          ((++_processed_count))
+        fi
+        ;;
+
+      *.zlib)
+        local _output_file="${_normalised_file%.*zlib}"
+        if zlib-flate -uncompress < "$_normalised_file" > "$_output_file"; then
+          rm -f "$_normalised_file"
+          ((++_processed_count))
+        else
+          print -u2 "Warning: Extraction of '$_normalised_file' may have failed"
+          # Clean up potentially corrupted output file
+          rm -f "$_output_file"
+          _exit_code=1
+        fi
+        ;;
+
+      # Archive formats requiring specialised tools
+      *.cbr|*.rar)
+        if ! $_unrar_command x -ad "$_normalised_file"; then
+          print -u2 "Warning: Extraction of '$_normalised_file' may have failed"
+          _exit_code=1
+        else
+          ((++_processed_count))
+        fi
+        ;;
+
+      *.cbz|*.epub|*.zip)
+        if ! $_unzip_command "$_normalised_file"; then
+          print -u2 "Warning: Extraction of '$_normalised_file' may have failed"
+          _exit_code=1
+        else
+          ((++_processed_count))
+        fi
+        ;;
+
+      *.7z|*.apk|*.arj|*.cab|*.cb7|*.chm|*.deb|*.iso|*.lzh|*.msi|*.pkg|*.rpm|*.udf|*.wim|*.xar|*.vhd)
+        if ! $_sevenz_command x "$_normalised_file"; then
+          print -u2 "Warning: Extraction of '$_normalised_file' may have failed"
+          _exit_code=1
+        else
+          ((++_processed_count))
+        fi
+        ;;
+
+      *.exe)
+        if ! $_cabext_command "$_normalised_file"; then
+          print -u2 "Warning: Extraction of '$_normalised_file' may have failed"
+          _exit_code=1
+        else
+          ((++_processed_count))
+        fi
+        ;;
+
+      *.cpio)
+        if ! $_cpio_command -id < "$_normalised_file"; then
+          print -u2 "Warning: Extraction of '$_normalised_file' may have failed"
+          _exit_code=1
+        else
+          ((++_processed_count))
+        fi
+        ;;
+
+      *.cba|*.ace)
+        if ! $_unace_command x "$_normalised_file"; then
+          print -u2 "Warning: Extraction of '$_normalised_file' may have failed"
+          _exit_code=1
+        else
+          ((++_processed_count))
+        fi
+        ;;
+
+      *.zpaq)
+        if ! $_zpaq_command x "$_normalised_file"; then
+          print -u2 "Warning: Extraction of '$_normalised_file' may have failed"
+          _exit_code=1
+        else
+          ((++_processed_count))
+        fi
+        ;;
+
+      *.arc)
+        if ! $_arc_command e "$_normalised_file"; then
+          print -u2 "Warning: Extraction of '$_normalised_file' may have failed"
+          _exit_code=1
+        else
+          ((++_processed_count))
+        fi
+        ;;
+
+      # Specialised formats
+      *.cso)
+        if command -v ciso >/dev/null 2>&1; then
+          local _iso_file="${_normalised_file}.iso"
+          _temp_files+=("$_iso_file")
+          if ciso 0 "$_normalised_file" "$_iso_file" && extract "$_iso_file"; then
+            # Remove from temp files list since extraction succeeded
+            _temp_files=("${_temp_files[@]/$_iso_file}")
+            rm -f "$_iso_file"
+            ((++_processed_count))
+          else
+            print -u2 "Warning: Extraction of '$_normalised_file' may have failed"
+            _exit_code=1
+          fi
+        else
+          print -u2 "Error: ciso command not available for .cso extraction"
+          _exit_code=1
+        fi
+        ;;
+
+      *.dmg)
+        local _mnt_dir
+        _mnt_dir=$(mktemp -d)
+        _temp_files+=("$_mnt_dir")
+
+        if $_hdutil_command mount "$_normalised_file" -mountpoint "$_mnt_dir" >/dev/null 2>&1; then
+          print "Mounted at: $_mnt_dir"
+
+          if [[ "$_auto_unmount" == "true" ]]; then
+            # Record for auto-unmount
+            _mounted_dmgs+=("$_mnt_dir")
+            print "Note: Will be automatically unmounted on exit"
+          else
+            print "Note: Remember to unmount with: hdiutil unmount '$_mnt_dir'"
+          fi
+
+          ((++_processed_count))
+        else
+          print -u2 "Error: Failed to mount .dmg file"
+          rm -rf "$_mnt_dir"
+          _temp_files=("${_temp_files[@]/$_mnt_dir}")
+          _exit_code=1
+        fi
+        ;;
+
+      *.appimage)
+        if _is_valid_appimage "$_normalised_file"; then
+          chmod +x "$_normalised_file"
+          if "./$_normalised_file" --appimage-extract; then
+            ((++_processed_count))
+          else
+            print -u2 "Warning: Extraction of '$_normalised_file' may have failed"
+            _exit_code=1
+          fi
+        else
+          _exit_code=1
+        fi
+        ;;
+
+      # Unknown format
+      *)
+        print -u2 "extract: '$_normalised_file' - unknown or unsupported archive format"
+        _exit_code=1
+        continue
+        ;;
+    esac
+  done
+
+  IFS="$_saveifs"
+
+  # Provide summary if multiple files were processed
+  if (( _processed_count > 1 )); then
+    print "Extracted $_processed_count archive(s)"
+  fi
+
+  return $_exit_code
+}
